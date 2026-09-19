@@ -1,13 +1,5 @@
 import { useState } from "react";
-
-const events = [
-  { id: "EVT-0847", user: "Anita Rao", query: "Upload CDU-4 inspection report", agent: "Document Agent", model: "Vision Model", tool: "OCR Engine", action: "DOCUMENT_UPLOAD", approval: "—", output: "47 pages indexed", ts: "16 Sep 2026 14:22:03", cls: "CONFIDENTIAL", risk: "Low" },
-  { id: "EVT-0848", user: "Document Agent", query: "Extract and chunk report", agent: "Document Agent", model: "—", tool: "PDF Parser", action: "DOCUMENT_PROCESS", approval: "—", output: "1,284 chunks created", ts: "16 Sep 2026 14:22:31", cls: "CONFIDENTIAL", risk: "Low" },
-  { id: "EVT-0849", user: "Anita Rao", query: "Compare inspection report with SOP", agent: "HSE Agent", model: "Small LLM", tool: "Hybrid RAG", action: "KNOWLEDGE_QUERY", approval: "—", output: "3 sources retrieved, analysis complete", ts: "16 Sep 2026 14:25:10", cls: "CONFIDENTIAL", risk: "Low" },
-  { id: "EVT-0850", user: "HSE Agent", query: "Request approval — management note generation", agent: "Document Agent", model: "Small LLM", tool: "Template Engine", action: "APPROVAL_REQUEST", approval: "Pending", output: "Approval created APR-2024-001", ts: "16 Sep 2026 14:30:45", cls: "CONFIDENTIAL", risk: "Medium" },
-  { id: "EVT-0851", user: "Rajesh Kumar", query: "Show all open maintenance tasks for CDU-4", agent: "Data Analysis Agent", model: "No LLM", tool: "PostgreSQL Query Tool", action: "DATABASE_QUERY", approval: "—", output: "8 records returned (read-only)", ts: "16 Sep 2026 14:35:00", cls: "INTERNAL", risk: "Low" },
-  { id: "EVT-0852", user: "System", query: "Periodic security scan", agent: "—", model: "—", tool: "Security Scanner", action: "SECURITY_SCAN", approval: "—", output: "No threats detected", ts: "16 Sep 2026 14:00:00", cls: "PUBLIC", risk: "Low" },
-];
+import { useNav } from "../context/NavContext";
 
 const riskColors: Record<string, { bg: string; color: string }> = {
   Low: { bg: "#DCFCE7", color: "#15803D" },
@@ -23,11 +15,12 @@ const clsColors: Record<string, { bg: string; color: string }> = {
 };
 
 export default function AuditTrail() {
+  const { auditEvents } = useNav();
   const [search, setSearch] = useState("");
   const [filterUser, setFilterUser] = useState("All");
   const [filterRisk, setFilterRisk] = useState("All");
 
-  const filtered = events.filter((e) => {
+  const filtered = auditEvents.filter((e) => {
     const matchSearch = e.query.toLowerCase().includes(search.toLowerCase()) || e.user.toLowerCase().includes(search.toLowerCase());
     const matchUser = filterUser === "All" || e.user === filterUser;
     const matchRisk = filterRisk === "All" || e.risk === filterRisk;

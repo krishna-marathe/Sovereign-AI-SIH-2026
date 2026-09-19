@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Check, X, AlertTriangle, ShieldAlert, FileText, ChevronDown, ChevronUp, Lock, RefreshCcw } from "lucide-react";
+import { useNav } from "../context/NavContext";
 
 const initialApprovals = [
   {
@@ -67,21 +68,71 @@ const statusColors: Record<string, { bg: string; color: string }> = {
 };
 
 export default function Approvals() {
+  const { demoArtifacts, setDemoArtifacts, addAuditEvent } = useNav();
   const [approvalsState, setApprovalsState] = useState(initialApprovals);
   const [filter, setFilter] = useState("All");
   const [expanded, setExpanded] = useState<string | null>("APR-2024-001");
   const [viewingEvidence, setViewingEvidence] = useState<string | null>(null);
+  
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
 
-  const filtered = approvalsState.filter((a) => filter === "All" || a.status === filter);
+  const dynamicApprovals = demoArtifacts.map(art => ({
+    id: art.id,
+    task: `Review generated artifact: ${art.template.name}`,
+    requestedBy: art.template.createdBy,
+    project: art.template.project,
+    risk: "Medium",
+    evidence: 3,
+    status: art.status === "pending" ? "Pending" : art.status === "approved" ? "Approved" : "Rejected",
+    requestedAt: "19 Sep 2026 16:30",
+    description: `Artifact: ${art.template.name}\nType: ${art.template.type}\nSource: ${art.template.createdBy}\nEvidence: 3 internal sources\nClassification: ${art.template.classification}`,
+    cls: art.template.classification,
+    isArtifact: true,
+    scenarioId: art.scenarioId,
+    approvedBy: art.approvedBy,
+  }));
 
-  const pendingCount = approvalsState.filter(a => a.status === "Pending").length;
+  const allApprovals = [...dynamicApprovals, ...approvalsState];
 
-  const handleAction = (id: string, newStatus: string) => {
-    setApprovalsState(prev => 
-      prev.map(a => a.id === id ? { ...a, status: newStatus } : a)
-    );
-    // Optionally close the expanded view after action:
-    // setExpanded(null);
+  const filtered = allApprovals.filter((a) => filter === "All" || a.status === filter);
+
+  const pendingCount = allApprovals.filter(a => a.status === "Pending").length;
+
+  const handleAction = (id: string, newStatus: string, reason?: string) => {
+    const isArt = dynamicApprovals.find(a => a.id === id);
+    if (isArt) {
+      setDemoArtifacts((prev: any[]) => prev.map(a => 
+        a.id === id ? { 
+          ...a, 
+          status: newStatus.toLowerCase(), 
+          approvedBy: newStatus === "Approved" ? "current demo user" : undefined,
+          approvedAt: newStatus === "Approved" ? new Date().toISOString() : undefined 
+        } : a
+      ));
+      
+      const outputStr = newStatus === "Approved" 
+        ? `${newStatus} by current demo user` 
+        : `${newStatus} by current demo user. Reason: ${reason}`;
+
+      addAuditEvent({
+        user: "current demo user",
+        query: `Human review of artifact: ${isArt.task.replace("Review generated artifact: ", "")}`,
+        agent: "—",
+        model: "—",
+        tool: "Approval Workflow",
+        action: newStatus === "Approved" ? "ARTIFACT_APPROVED" : "ARTIFACT_REJECTED",
+        approval: newStatus,
+        output: outputStr,
+        ts: new Date().toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+        cls: isArt.cls,
+        risk: isArt.risk
+      });
+    } else {
+      setApprovalsState(prev => 
+        prev.map(a => a.id === id ? { ...a, status: newStatus } : a)
+      );
+    }
   };
 
   return (
@@ -209,7 +260,40 @@ export default function Approvals() {
                       </div>
                     </div>
 
-                    {a.status === "Pending" ? (
+                    {rejectingId === a.id ? (
+                      <div className="flex flex-col gap-3 mt-6 pt-4 border-t border-slate-200">
+                        <div className="text-sm font-semibold text-slate-700">Rejection Reason</div>
+                        <textarea 
+                          className="w-full p-3 rounded-lg border border-slate-300 text-sm focus:ring-2 focus:ring-rose-500 outline-none resize-none" 
+                          rows={2} 
+                          placeholder="Enter reason for rejection..."
+                          value={rejectReason}
+                          onChange={(e) => setRejectReason(e.target.value)}
+                        />
+                        <div className="flex items-center gap-3">
+                          <button 
+                            disabled={!rejectReason.trim()}
+                            onClick={() => {
+                              handleAction(a.id, "Rejected", rejectReason);
+                              setRejectingId(null);
+                              setRejectReason("");
+                            }}
+                            className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-white bg-rose-600 hover:bg-rose-700 shadow-sm transition-all disabled:opacity-50"
+                          >
+                            <X className="w-4 h-4" /> Confirm Rejection
+                          </button>
+                          <button 
+                            onClick={() => {
+                              setRejectingId(null);
+                              setRejectReason("");
+                            }}
+                            className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 shadow-sm transition-all"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    ) : a.status === "Pending" ? (
                       <div className="flex flex-wrap gap-3 mt-6 pt-4 border-t border-slate-200">
                         <button 
                           onClick={() => handleAction(a.id, "Approved")}
@@ -218,13 +302,13 @@ export default function Approvals() {
                           <Check className="w-4 h-4" /> Approve & Execute
                         </button>
                         <button 
-                          onClick={() => handleAction(a.id, "Rejected")}
+                          onClick={() => setRejectingId(a.id)}
                           className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-rose-700 bg-white border border-rose-200 hover:bg-rose-50 shadow-sm transition-all active:scale-95"
                         >
                           <X className="w-4 h-4" /> Reject
                         </button>
                         <button 
-                          onClick={() => handleAction(a.id, "Rejected")}
+                          onClick={() => setRejectingId(a.id)}
                           className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-semibold text-slate-700 bg-white border border-slate-300 hover:bg-slate-50 shadow-sm transition-all active:scale-95"
                         >
                           <RefreshCcw className="w-4 h-4" /> Request Changes

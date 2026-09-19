@@ -1,100 +1,86 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useNav } from "../context/NavContext";
-
-type ExecutionMode = "auto" | "manual";
-type ExecutionPath = "fast" | "knowledge" | "complex" | null;
+import type { DemoArtifact } from "../context/NavContext";
+import { matchScenario, runExecution, artifactTemplates } from "../demo";
+import type { DemoScenario, ExecutionState, EvidenceSource, RetrievalStrategy } from "../demo";
+import ExecutionTimeline from "../components/execution/ExecutionTimeline";
+import AgentExecution from "../components/execution/AgentExecution";
+import RouterVisualization from "../components/execution/RouterVisualization";
+import EvidencePanel from "../components/evidence/EvidencePanel";
+import DocumentViewer from "../components/evidence/DocumentViewer";
+import ArtifactCard from "../components/artifacts/ArtifactCard";
+import ApprovalCard from "../components/artifacts/ApprovalCard";
+import ModelSelector from "../components/models/ModelSelector";
 
 type Message = {
   id: number;
   role: "user" | "assistant";
   content: string;
   meta?: {
-    path: ExecutionPath;
+    route: string;
     agent?: string;
     model?: string;
-    sources?: number;
+    sources?: EvidenceSource[];
+    retrievalStrategy?: RetrievalStrategy;
     verified?: boolean;
-    generationSteps?: GenerationStep[];
+    executionState?: ExecutionState;
+    scenarioId?: string;
   };
   artifact?: {
-    name: string;
-    status: "pending_approval" | "approved";
-    type?: "doc" | "code" | "drawing";
-    content?: string;
+    scenarioId: string;
+    key: string;
   };
 };
 
-type GenerationStep = { label: string; status: "pending" | "active" | "completed" };
-
-type GenerationState = {
-  active: boolean;
-  steps: GenerationStep[];
-  progress: number;
-  startTime: number;
-  duration: number;
-  questionType: "simple" | "medium" | "complex" | "coding" | "engineering";
-  artifactGen?: boolean;
-};
-
-const demoMessages: Message[] = [
-  {
-    id: 1,
-    role: "user",
-    content: "What is the current status of Project Alpha?",
-  },
-  {
-    id: 2,
-    role: "assistant",
-    content: "Project Alpha is currently 72% complete. CDU-4 turnaround is in progress, with 14 of 19 tasks completed. Estimated completion: 18 October 2026.",
-    meta: { path: "fast", model: "Direct DB" },
-  },
-  {
-    id: 3,
-    role: "user",
-    content: "Compare the latest P-102 inspection report with the approved SOP.",
-  },
-  {
-    id: 4,
-    role: "assistant",
-    content: "Based on hybrid retrieval across 3 sources:\n\n**Inspection Report (Aug 2026):** Vibration at bearing DE: 8.2 mm/s (threshold: 7.1 mm/s). Seal leakage detected at mechanical seal.\n\n**SOP Rev 3.2:** Specifies immediate isolation when bearing vibration exceeds 7.1 mm/s. Seal inspection interval: 6 months — current overdue by 8 days.\n\n**Assessment:** Two deviations from SOP identified. Recommend initiating maintenance work order.",
-    meta: { path: "knowledge", agent: "HSE Agent", model: "Local LLM", sources: 3, verified: true },
-  },
-];
-
-const agents = ["Research Agent", "Document Agent", "Coding Agent", "Engineering Agent", "HSE/Inspection Agent", "Data Analysis Agent", "Calculation Agent", "Knowledge Retrieval Agent"];
-
-const pathLabels: Record<string, string> = {
+const routeLabels: Record<string, string> = {
   fast: "⚡ Fast Path · Direct Data Retrieval",
   knowledge: "🔍 Knowledge Path · Hybrid RAG",
-  complex: "⚙ Complex Path · Multi-Agent",
-  coding: "⌨ Coding Path · Sandbox Environment",
+  complex: "⚙️ Complex Path · Multi-Agent",
+  coding: "💻 Coding Path · Sandbox Environment",
   engineering: "📐 Engineering Path · Analysis & CAD",
 };
 
+const routeStyles: Record<string, string> = {
+  fast: "bg-teal-50 text-teal-700 border-teal-200",
+  knowledge: "bg-blue-50 text-blue-700 border-blue-200",
+  complex: "bg-purple-50 text-purple-700 border-purple-200",
+  coding: "bg-slate-100 text-slate-700 border-slate-300",
+  engineering: "bg-amber-50 text-amber-700 border-amber-200",
+};
+
 export default function Workbench() {
-  const { navigate, projects, setPendingSandboxTask } = useNav();
-  const [messages, setMessages] = useState<Message[]>(demoMessages);
+  const {
+    navigate, projects, setPendingSandboxTask,
+    setActiveScenario, demoArtifacts, setDemoArtifacts, resetDemo, addAuditEvent,
+  } = useNav();
+
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [mode, setMode] = useState<ExecutionMode>("auto");
-  const [selectedAgent, setSelectedAgent] = useState("Research Agent");
-  const [showRouter, setShowRouter] = useState(true);
+  const [mode, setMode] = useState<"auto" | "manual">("auto");
+  const [selectedModelId, setSelectedModelId] = useState("qwen3-8b");
   const [leftCollapsed, setLeftCollapsed] = useState(true);
   const [rightCollapsed, setRightCollapsed] = useState(true);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [currentProjectName, setCurrentProjectName] = useState(projects[0]?.name || "CDU-4 Inspection Analysis");
   const [viewingDrawing, setViewingDrawing] = useState(false);
-  
-  // State for Chats
+  const [viewingArtifactDocId, setViewingArtifactDocId] = useState<string | null>(null);
+
+  // Active execution
+  const [activeExecution, setActiveExecution] = useState<ExecutionState | null>(null);
+  const [activeScenarioRef, setActiveScenarioRef] = useState<DemoScenario | null>(null);
+  const [rightPanelSources, setRightPanelSources] = useState<EvidenceSource[]>([]);
+  const [rightPanelStrategy, setRightPanelStrategy] = useState<RetrievalStrategy | null>(null);
+
+  // Chat history
   const [recentChats, setRecentChats] = useState([
-    { id: 1, title: "Current status of Project Alpha", type: "Project" },
-    { id: 2, title: "Compare latest P-102 report", type: "Project" },
-    { id: 3, title: "Personal Notes - Q3", type: "Personal" }
+    { id: 1, title: "CDU-4 Inspection Analysis", type: "Project" as const },
+    { id: 2, title: "P-102 Pump Assessment", type: "Project" as const },
+    { id: 3, title: "Personal Notes — Q3", type: "Personal" as const },
   ]);
   const [showNewChatMenu, setShowNewChatMenu] = useState(false);
-  
-  const currentProject = projects.find(p => p.name === currentProjectName) || projects[0];
 
-  const [generation, setGeneration] = useState<GenerationState | null>(null);
+  const currentProject = projects.find(p => p.name === currentProjectName) || projects[0];
+  const cleanupRef = useRef<(() => void) | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -103,231 +89,183 @@ export default function Workbench() {
 
   useEffect(() => {
     scrollToBottom();
-  }, [messages, generation]);
+  }, [messages, activeExecution]);
+
+  useEffect(() => {
+    return () => { cleanupRef.current?.(); };
+  }, []);
 
   const handleNewChat = (type: "Project" | "Personal") => {
-    const newChat = {
-      id: Date.now(),
-      title: "New " + type + " Chat",
-      type: type
-    };
+    const newChat = { id: Date.now(), title: "New " + type + " Chat", type };
     setRecentChats([newChat, ...recentChats]);
     setMessages([]);
+    setActiveExecution(null);
+    setActiveScenarioRef(null);
     setShowNewChatMenu(false);
   };
 
-  const handleSend = () => {
-    if (!input.trim() || generation?.active) return;
-    const userMsg: Message = { id: messages.length + 1, role: "user", content: input };
-    setMessages([...messages, userMsg]);
-    setInput("");
+  const handleResetDemo = () => {
+    setMessages([]);
+    setActiveExecution(null);
+    setActiveScenarioRef(null);
+    setRightPanelSources([]);
+    setRightPanelStrategy(null);
+    resetDemo();
+  };
 
-    const lowerInput = input.toLowerCase();
-    let qType: "simple" | "medium" | "complex" | "coding" | "engineering" = "simple";
-    let duration = 3; // 3 sec default
-    let hasArtifact = false;
+  const getArtifactStatus = (scenarioId: string): "pending" | "approved" | "rejected" => {
+    const art = demoArtifacts.find(a => a.scenarioId === scenarioId);
+    return art?.status || "pending";
+  };
 
-    if (lowerInput.includes("code") || lowerInput.includes("sandbox") || lowerInput.includes("testcase") || lowerInput.includes("coding")) {
-      qType = "coding";
-      duration = 15;
-      hasArtifact = true;
-    } else if (lowerInput.includes("drawing") || lowerInput.includes("engineering") || lowerInput.includes("design")) {
-      qType = "engineering";
-      duration = 15;
-      hasArtifact = true;
-    } else if (lowerInput.includes("plan") || lowerInput.includes("complex") || lowerInput.includes("turnaround")) {
-      qType = "complex";
-      duration = 15; // Speeding up simulation for UX
-      hasArtifact = true;
-    } else if (lowerInput.includes("analyze") || lowerInput.includes("report") || lowerInput.includes("compare")) {
-      qType = "medium";
-      duration = 8;
-      hasArtifact = true;
-    }
-
-    let steps: GenerationStep[] = [];
-    if (qType === "coding") {
-      steps = [
-        { label: "Opening Sandbox Environment", status: "active" },
-        { label: "Writing implementation code", status: "pending" },
-        { label: "Generating unit test cases", status: "pending" },
-        { label: "Running tests & verifying execution", status: "pending" },
-        { label: "Finalizing sandbox output", status: "pending" }
-      ];
-    } else if (qType === "engineering") {
-      steps = [
-        { label: "Loading engineering constraints & requirements", status: "active" },
-        { label: "Running finite element & structural analysis", status: "pending" },
-        { label: "Generating 3D blueprint / drawing", status: "pending" },
-        { label: "Validating safety factors against standards", status: "pending" }
-      ];
-    } else if (qType === "complex") {
-      steps = [
-        { label: "Analyzing multi-agent requirements", status: "active" },
-        { label: "Delegating tasks to Research & Engineering agents", status: "pending" },
-        { label: "Running simulations in Sandbox", status: "pending" },
-        { label: "Generating artifacts and blueprints", status: "pending" },
-        { label: "Finalizing output & awaiting approval", status: "pending" }
-      ];
-    } else if (qType === "medium") {
-      steps = [
-        { label: "Retrieving documents via Hybrid RAG", status: "active" },
-        { label: "Cross-referencing compliance rules", status: "pending" },
-        { label: "Generating summary artifact", status: "pending" },
-        { label: "Finalizing", status: "pending" }
-      ];
-    } else {
-      steps = [
-        { label: "Drafting response", status: "active" }
-      ];
-    }
-
-    setGeneration({
-      active: true,
-      steps: steps,
-      progress: 0,
-      startTime: Date.now(),
-      duration: duration,
-      questionType: qType,
-      artifactGen: hasArtifact
+  const handleApproveArtifact = (scenarioId: string) => {
+    setDemoArtifacts((prev: DemoArtifact[]) => {
+      const exists = prev.find(a => a.scenarioId === scenarioId);
+      if (exists) {
+        return prev.map(a => a.scenarioId === scenarioId ? { ...a, status: "approved" as const, approvedBy: "Anita Rao", approvedAt: new Date().toISOString() } : a);
+      }
+      return prev;
     });
   };
 
-  // Chat generation simulation loop
-  import_useEffect_if_needed: {
-    // (using React.useEffect inline below to avoid changing top-level imports)
-  }
-  
-  // Simulate active generation
-  import_react: React.useEffect(() => {
-    if (!generation?.active) return;
+  const handleRejectArtifact = (scenarioId: string) => {
+    setDemoArtifacts((prev: DemoArtifact[]) =>
+      prev.map(a => a.scenarioId === scenarioId ? { ...a, status: "rejected" as const } : a)
+    );
+  };
 
-    const interval = setInterval(() => {
-      const elapsed = (Date.now() - generation.startTime) / 1000;
-      const progress = Math.min((elapsed / generation.duration) * 100, 100);
-      
-      let newSteps = [...generation.steps];
-      if (generation.questionType === "complex") {
-        if (progress < 10) newSteps = newSteps.map((s,i) => i===0 ? {...s, status: "active"} : {...s, status: "pending"});
-        else if (progress < 30) newSteps = newSteps.map((s,i) => i<1 ? {...s, status: "completed"} : i===1 ? {...s, status: "active"} : {...s, status: "pending"});
-        else if (progress < 60) newSteps = newSteps.map((s,i) => i<2 ? {...s, status: "completed"} : i===2 ? {...s, status: "active"} : {...s, status: "pending"});
-        else if (progress < 85) newSteps = newSteps.map((s,i) => i<3 ? {...s, status: "completed"} : i===3 ? {...s, status: "active"} : {...s, status: "pending"});
-        else newSteps = newSteps.map((s,i) => i<4 ? {...s, status: "completed"} : i===4 ? {...s, status: "active"} : {...s, status: "pending"});
-      } else if (generation.questionType === "medium") {
-        if (progress < 20) newSteps = newSteps.map((s,i) => i===0 ? {...s, status: "active"} : {...s, status: "pending"});
-        else if (progress < 60) newSteps = newSteps.map((s,i) => i<1 ? {...s, status: "completed"} : i===1 ? {...s, status: "active"} : {...s, status: "pending"});
-        else if (progress < 90) newSteps = newSteps.map((s,i) => i<2 ? {...s, status: "completed"} : i===2 ? {...s, status: "active"} : {...s, status: "pending"});
-        else newSteps = newSteps.map((s,i) => i<3 ? {...s, status: "completed"} : i===3 ? {...s, status: "active"} : {...s, status: "pending"});
-      }
+  const handleSend = () => {
+    if (!input.trim() || activeExecution?.active) return;
 
-      setGeneration((prev) => prev ? { ...prev, progress, steps: newSteps } : null);
+    const userMsg: Message = { id: Date.now(), role: "user", content: input };
+    setMessages(prev => [...prev, userMsg]);
+    const queryText = input;
+    setInput("");
 
-      if (elapsed >= generation.duration) {
-        clearInterval(interval);
-        let path: ExecutionPath = "fast";
-        let content = "Hello! I am Sovereign AI, ready to assist you. How can I help you today?";
-        let artifactDetails: any = undefined;
+    // Match scenario
+    const scenario = matchScenario(queryText);
 
-        if (generation.questionType === "complex") {
-          path = "complex";
-          content = "I have generated the comprehensive turnaround plan and associated artifacts. Please review the attached execution DAG and resource allocation blueprint.";
-          artifactDetails = { name: "Turnaround_Plan_v1.pdf", status: "pending_approval", type: "doc" };
-        } else if (generation.questionType === "medium") {
-          path = "knowledge";
-          content = "Analysis complete. I've cross-referenced the reports and generated a summary document highlighting the key discrepancies.";
-          artifactDetails = { name: "Analysis_Report.csv", status: "pending_approval", type: "doc" };
-        } else if (generation.questionType === "coding") {
-          path = "complex"; 
-          content = "I have analyzed the requirements and designed the implementation logic.";
-          artifactDetails = { 
-            name: "sandbox_script.py", 
-            status: "pending_approval", 
-            type: "code",
-            content: `import numpy as np
-import pandas as pd
-from typing import List, Dict
+    if (!scenario) {
+      // Fallback for unmatched queries
+      setTimeout(() => {
+        const fallbackMsg: Message = {
+          id: Date.now(),
+          role: "assistant",
+          content: "I can help you with that. Could you provide more details about what you need? I support project queries, inspection analysis, risk assessments, engineering calculations, code fixes, and more.\n\nTry asking about:\n• Project status\n• Inspection report comparisons\n• Equipment risk analysis\n• Turnaround planning\n• Vendor evaluations\n• Engineering analysis or drawings\n• Code fixes and debugging",
+          meta: { route: "fast", model: "Qwen2.5-Omni-3B", verified: true },
+        };
+        setMessages(prev => [...prev, fallbackMsg]);
+      }, 1500);
+      return;
+    }
 
-class PumpEfficiencyAnalyzer:
-    def __init__(self, threshold: float = 7.1):
-        self.threshold = threshold
-        self.data_cache = []
+    // Use manual model if manual mode is selected
+    const effectiveModel = mode === "manual"
+      ? { id: selectedModelId, name: selectedModelId, reason: "Manually selected by user" }
+      : scenario.model;
 
-    def process_telemetry(self, raw_data: List[Dict]) -> pd.DataFrame:
-        df = pd.DataFrame(raw_data)
-        if df.empty:
-            raise ValueError("No data provided")
-        df['efficiency_score'] = df['flow_rate'] / (df['power_kw'] + 1e-5)
-        self.data_cache.append(df)
-        return df
+    setActiveScenario(scenario);
+    setActiveScenarioRef(scenario);
 
-    def check_anomalies(self, df: pd.DataFrame) -> List[str]:
-        anomalies = []
-        for idx, row in df.iterrows():
-            if row['vibration_mms'] > self.threshold:
-                anomalies.append(f"High vibration at index {idx}: {row['vibration_mms']}")
-        return anomalies
-
-def run_test_cases():
-    analyzer = PumpEfficiencyAnalyzer()
-    test_data = [
-        {'flow_rate': 120, 'power_kw': 15, 'vibration_mms': 6.2},
-        {'flow_rate': 115, 'power_kw': 16, 'vibration_mms': 8.5},
-        {'flow_rate': 110, 'power_kw': 14, 'vibration_mms': 4.1}
-    ]
-    
-    df = analyzer.process_telemetry(test_data)
-    warnings = analyzer.check_anomalies(df)
-    
-    print(f"Processed {len(df)} records.")
-    print(f"Detected {len(warnings)} anomalies.")
-    for w in warnings:
-        print(f" - {w}")
-    return True
-
-if __name__ == '__main__':
-    run_test_cases()`
-          };
-        } else if (generation.questionType === "engineering") {
-          path = "complex";
-          content = "Engineering analysis is complete. I have evaluated the stress constraints and generated the requested CAD blueprint/drawing. Safety factors are within standards.";
-          artifactDetails = { 
-            name: "P102_Bearing_Design.cad", 
-            status: "pending_approval", 
-            type: "drawing" 
-          };
+    // Start execution
+    const cleanup = runExecution(
+      scenario,
+      (state) => {
+        setActiveExecution(state);
+        if (scenario.route === "knowledge") {
+          setRightCollapsed(false);
         }
-        
+      },
+      (finalState) => {
+        setActiveExecution(null);
+
+        // Build the assistant message
         const aiMsg: Message = {
           id: Date.now(),
           role: "assistant",
-          content,
-          meta: { 
-            path: path as ExecutionPath, 
-            agent: mode === "manual" ? selectedAgent : 
-                   generation.questionType === "coding" ? "Coding Agent" : 
-                   generation.questionType === "engineering" ? "Engineering Agent" : "Auto Selected", 
-            model: "Sovereign-1 (Local)", 
+          content: scenario.finalResponse,
+          meta: {
+            route: scenario.route,
+            agent: scenario.agents.sequential
+              .flatMap(g => g.agents)
+              .filter((v, i, a) => a.indexOf(v) === i)
+              .map(id => {
+                const names: Record<string, string> = {
+                  planner: "Planner", research: "Research Agent", document: "Document Agent",
+                  coding: "Coding Agent", engineering: "Engineering Agent", hse: "HSE/Inspection Agent",
+                  "data-analysis": "Data Analysis Agent", risk: "Risk Agent",
+                  knowledge: "Knowledge Retrieval Agent", calculation: "Calculation Agent",
+                  verification: "Verification Agent",
+                };
+                return names[id] || id;
+              })
+              .join(", "),
+            model: effectiveModel.name,
+            sources: scenario.sources.length > 0 ? scenario.sources : undefined,
+            retrievalStrategy: scenario.sources.length > 0 ? scenario.retrievalStrategy : undefined,
             verified: true,
-            generationSteps: [...newSteps]
+            executionState: finalState,
+            scenarioId: scenario.id,
           },
-          artifact: generation.artifactGen ? artifactDetails : undefined
         };
-        
-        setMessages((prev) => [...prev, aiMsg]);
-        setGeneration(null);
+
+        // Add artifact reference if scenario has one
+        if (scenario.artifactKey && artifactTemplates[scenario.artifactKey]) {
+          aiMsg.artifact = { scenarioId: scenario.id, key: scenario.artifactKey };
+
+          // Register artifact in global state
+          setDemoArtifacts((prev: DemoArtifact[]) => {
+            if (prev.find(a => a.scenarioId === scenario.id)) return prev;
+            
+            const newArtifact = {
+              id: `art-${scenario.id}`,
+              template: artifactTemplates[scenario.artifactKey!],
+              status: "pending" as const,
+              scenarioId: scenario.id,
+            };
+            
+            // Add audit event for generation
+            addAuditEvent({
+              user: "HSE / Inspection Agent",
+              query: `Generated artifact: ${newArtifact.template.name}`,
+              agent: "HSE Agent",
+              model: effectiveModel.name,
+              tool: "Artifact Generator",
+              action: "ARTIFACT_GENERATED",
+              approval: "Pending",
+              output: "Artifact successfully generated",
+              ts: new Date().toLocaleString("en-IN", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+              cls: newArtifact.template.classification,
+              risk: "Medium",
+            });
+            
+            return [...prev, newArtifact];
+          });
+        }
+
+        // Set evidence for right panel
+        if (scenario.sources.length > 0) {
+          setRightPanelSources(scenario.sources);
+          setRightPanelStrategy(scenario.retrievalStrategy);
+          setRightCollapsed(false);
+        }
+
+        setMessages(prev => [...prev, aiMsg]);
+
+        // Update chat history
+        setRecentChats(prev => {
+          const newChat = { id: Date.now(), title: queryText.slice(0, 40), type: "Project" as const };
+          return [newChat, ...prev.slice(0, 4)];
+        });
       }
-    }, 500); // 500ms tick
+    );
 
-    return () => clearInterval(interval);
-  }, [generation?.active, generation?.startTime, generation?.duration, generation?.questionType, generation?.artifactGen, mode, selectedAgent]);
-
-  const approveArtifact = (msgId: number) => {
-    setMessages((prev) => prev.map(m => m.id === msgId && m.artifact ? { ...m, artifact: { ...m.artifact, status: "approved" } } : m));
+    cleanupRef.current = cleanup;
   };
 
   return (
     <div className="flex flex-col h-full bg-slate-50">
-      {/* Single Compact Header */}
+      {/* Header */}
       <div className="flex items-center justify-between px-6 py-3 bg-white border-b border-slate-200 flex-shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-3">
           <span className="text-xs font-medium text-slate-500">Project:</span>
@@ -336,7 +274,7 @@ if __name__ == '__main__':
             🔒 {currentProject.cls}
           </span>
         </div>
-        
+
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 mr-2">
             <span className="text-xs text-slate-500 mr-2">{currentProject.contributors?.length || 0} contributors</span>
@@ -359,7 +297,17 @@ if __name__ == '__main__':
             </div>
           </div>
           <div className="h-6 w-px bg-slate-200 mx-1"></div>
-          
+
+          {/* Reset Demo */}
+          <button
+            onClick={handleResetDemo}
+            className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-lg font-medium text-slate-600 bg-slate-100 hover:bg-slate-200 transition-colors"
+            title="Reset Demo State"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+            Reset
+          </button>
+
           <button
             onClick={() => navigate("approvals")}
             className="relative w-9 h-9 flex items-center justify-center rounded-full hover:bg-slate-100 transition-colors"
@@ -373,7 +321,7 @@ if __name__ == '__main__':
               className="absolute -top-0.5 -right-0.5 text-xs font-bold w-4.5 h-4.5 rounded-full flex items-center justify-center border-2 border-white bg-amber-500 text-white"
               style={{ fontSize: 10 }}
             >
-              2
+              {demoArtifacts.filter(a => a.status === "pending").length || 2}
             </span>
           </button>
 
@@ -381,11 +329,9 @@ if __name__ == '__main__':
             <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold shadow-sm bg-teal-600 text-white">
               AR
             </div>
-            <span className="text-sm font-medium pr-1 text-slate-900">
-              Anita Rao
-            </span>
+            <span className="text-sm font-medium pr-1 text-slate-900">Anita Rao</span>
           </button>
-          
+
           <div className="h-6 w-px bg-slate-200 mx-1"></div>
           <button className="text-xs px-3 py-1.5 rounded-lg font-medium text-white bg-teal-600 hover:bg-teal-700 transition-colors shadow-sm" title="Export report">
             Export
@@ -398,10 +344,10 @@ if __name__ == '__main__':
         {!leftCollapsed ? (
           <div className="w-64 bg-white border-r border-slate-200 flex-shrink-0 flex flex-col overflow-y-auto transition-all">
             <div className="flex items-center justify-between px-4 py-4 border-b border-slate-100 bg-slate-50/50 gap-2">
-              <select 
+              <select
                 value={currentProjectName}
                 onChange={(e) => setCurrentProjectName(e.target.value)}
-                className="text-sm font-medium text-slate-700 border border-slate-300 rounded-md px-2 py-1.5 outline-none bg-white cursor-pointer w-full truncate shadow-sm focus:border-teal-500 focus:ring-1 focus:ring-teal-500" 
+                className="text-sm font-medium text-slate-700 border border-slate-300 rounded-md px-2 py-1.5 outline-none bg-white cursor-pointer w-full truncate shadow-sm focus:border-teal-500 focus:ring-1 focus:ring-teal-500"
                 title="Select Project"
               >
                 {projects.map(p => (
@@ -412,27 +358,23 @@ if __name__ == '__main__':
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
               </button>
             </div>
-            
+
             <div className="p-4 border-b border-slate-100 relative">
-              <button 
+              <button
                 onClick={() => setShowNewChatMenu(!showNewChatMenu)}
-                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-sm font-semibold transition-colors shadow-sm" title="Start a fresh chat">
+                className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-teal-600 hover:bg-teal-700 text-white rounded-xl text-sm font-semibold transition-colors shadow-sm"
+                title="Start a fresh chat"
+              >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>
                 New Chat
               </button>
-              
+
               {showNewChatMenu && (
-                <div className="absolute top-14 left-4 right-4 bg-white border border-slate-200 shadow-xl rounded-xl p-1 z-20 animate-in fade-in zoom-in-95">
-                  <button 
-                    onClick={() => handleNewChat("Project")}
-                    className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-teal-50 hover:text-teal-700 font-medium transition-colors"
-                  >
+                <div className="absolute top-14 left-4 right-4 bg-white border border-slate-200 shadow-xl rounded-xl p-1 z-20">
+                  <button onClick={() => handleNewChat("Project")} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-teal-50 hover:text-teal-700 font-medium transition-colors">
                     📝 Project Chat
                   </button>
-                  <button 
-                    onClick={() => handleNewChat("Personal")}
-                    className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-teal-50 hover:text-teal-700 font-medium transition-colors"
-                  >
+                  <button onClick={() => handleNewChat("Personal")} className="w-full text-left px-3 py-2 rounded-lg text-sm hover:bg-teal-50 hover:text-teal-700 font-medium transition-colors">
                     🔒 Personal Chat
                   </button>
                 </div>
@@ -465,11 +407,9 @@ if __name__ == '__main__':
 
         {/* Center — Chat */}
         <div className="flex-1 flex flex-col overflow-hidden relative">
-          {/* (Router removed as requested, now integrated in main header) */}
-
           {/* Messages */}
           <div className="flex-1 overflow-y-auto px-8 py-8 space-y-8 flex flex-col">
-            
+
             {messages.map((msg) => (
               <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                 <div className={`max-w-3xl ${msg.role === "user" ? "order-2" : ""}`}>
@@ -489,130 +429,93 @@ if __name__ == '__main__':
                       )}
                     </div>
                   )}
+
+                  {/* Router visualization for assistant messages */}
+                  {msg.role === "assistant" && msg.meta?.route && msg.meta.scenarioId && (
+                    <div className="mb-3">
+                      {(() => {
+                        const sc = matchScenario(msg.content) || { model: { name: msg.meta.model || "", reason: "" }, complexity: "simple" as const, route: msg.meta.route as any };
+                        // Find the actual scenario
+                        const found = demoArtifacts.find(a => a.scenarioId === msg.meta!.scenarioId);
+                        return (
+                          <RouterVisualization
+                            route={msg.meta.route as any}
+                            modelName={msg.meta.model || ""}
+                            modelReason={mode === "manual" ? "Manually selected by user" : "Auto-selected based on query complexity"}
+                            complexity={msg.meta.route === "fast" ? "simple" : msg.meta.route === "knowledge" ? "medium" : "complex"}
+                          />
+                        );
+                      })()}
+                    </div>
+                  )}
+
                   <div
                     className={`rounded-2xl px-5 py-4 text-sm leading-relaxed shadow-sm ${
-                      msg.role === "user" 
-                        ? "bg-teal-600 text-white rounded-tr-sm" 
+                      msg.role === "user"
+                        ? "bg-teal-600 text-white rounded-tr-sm"
                         : "bg-white text-slate-800 border border-slate-200 rounded-tl-sm"
                     }`}
                     style={{ whiteSpace: "pre-wrap" }}
                   >
                     {msg.content}
                   </div>
-                  {msg.artifact && (
-                    <div className="mt-4 p-4 bg-white border border-slate-200 rounded-xl flex flex-col shadow-sm">
-                      {/* Top Row: Icon, Info, and Action Button */}
-                      <div className="flex items-start justify-between w-full">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-lg bg-teal-50 flex items-center justify-center text-teal-600 shadow-sm border border-teal-100 shrink-0">
-                            {msg.artifact.type === "code" ? (
-                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
-                            ) : msg.artifact.type === "drawing" ? (
-                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
-                            ) : (
-                              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-                            )}
-                          </div>
-                          <div>
-                            <div className="text-sm font-semibold text-slate-800">{msg.artifact.name}</div>
-                            <div className="text-[11px] text-slate-500 mt-0.5">
-                              {msg.artifact.status === "pending_approval" ? "Awaiting your approval to save..." : "Approved & Saved"}
-                            </div>
-                          </div>
-                        </div>
 
-                        {/* Action Button (View in Sandbox, View Document, etc.) */}
-                        <div className="flex items-center">
-                          {msg.artifact.type === "code" && (
-                            <button 
-                              onClick={() => {
-                                if (msg.artifact!.content) setPendingSandboxTask(msg.artifact!.content);
-                                navigate("sandbox");
-                              }} 
-                              className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white font-medium rounded-lg transition-colors shadow-sm"
-                            >
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"></polyline><polyline points="8 6 2 12 8 18"></polyline></svg>
-                              View in Sandbox
-                            </button>
-                          )}
-                          {msg.artifact.type === "drawing" && (
-                            <button onClick={() => setViewingDrawing(true)} className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white font-medium rounded-lg transition-colors shadow-sm">
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
-                              View Drawing
-                            </button>
-                          )}
-                          {msg.artifact.type === "doc" && (
-                            <button className="flex items-center gap-1.5 text-xs px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white font-medium rounded-lg transition-colors shadow-sm">
-                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline></svg>
-                              Open Document
-                            </button>
-                          )}
-                        </div>
-                      </div>
-
-                      {/* Approvals Row */}
-                      <div className="mt-4 flex items-center justify-between w-full border-t border-slate-100 pt-3">
-                        <span className="text-xs text-slate-400 font-medium tracking-wide uppercase">AI Action Required</span>
-                        {msg.artifact.status === "pending_approval" ? (
-                          <div className="flex items-center gap-2">
-                            <button onClick={() => approveArtifact(msg.id)} className="text-xs px-5 py-1.5 bg-teal-600 text-white font-semibold rounded-md hover:bg-teal-700 transition-colors shadow-sm">Approve</button>
-                            <button className="text-xs px-5 py-1.5 bg-white border border-slate-200 text-slate-600 font-semibold rounded-md hover:bg-slate-50 transition-colors shadow-sm">Reject</button>
-                          </div>
-                        ) : (
-                          <span className="text-[10px] font-bold text-green-700 bg-green-50 px-2.5 py-1 rounded border border-green-200 uppercase tracking-wider shadow-sm">✓ Approved</span>
-                        )}
-                      </div>
+                  {/* Artifact */}
+                  {msg.artifact && artifactTemplates[msg.artifact.key] && (
+                    <div className="mt-4">
+                      <ArtifactCard
+                        artifact={artifactTemplates[msg.artifact.key]}
+                        status={getArtifactStatus(msg.artifact.scenarioId)}
+                        onViewInSandbox={artifactTemplates[msg.artifact.key].type === "CODE" ? () => {
+                          const tmpl = artifactTemplates[msg.artifact!.key];
+                          if (tmpl.codeContent) {
+                            setActiveScenario(activeScenarioRef);
+                            setPendingSandboxTask(tmpl.codeContent);
+                          }
+                          navigate("coding-workspace");
+                        } : undefined}
+                        onViewDrawing={artifactTemplates[msg.artifact.key].type === "CAD" ? () => setViewingDrawing(true) : undefined}
+                        onViewDocument={["PDF", "DOCX", "CSV", "XLSX"].includes(artifactTemplates[msg.artifact.key].type) ? () => setViewingArtifactDocId(msg.artifact!.key) : undefined}
+                        onReview={() => navigate("approvals")}
+                      />
                     </div>
                   )}
-                  {msg.meta?.path && (
+
+                  {/* Route badge + sources link */}
+                  {msg.meta?.route && (
                     <div className="mt-3 flex items-center gap-3 ml-1">
-                      <span
-                        className={`text-xs px-2.5 py-1 rounded-md font-medium border ${
-                          msg.meta.path === "fast" 
-                            ? "bg-teal-50 text-teal-700 border-teal-200" 
-                            : msg.meta.path === "knowledge" 
-                              ? "bg-blue-50 text-blue-700 border-blue-200" 
-                              : "bg-purple-50 text-purple-700 border-purple-200"
-                        }`}
-                      >
-                        {pathLabels[msg.meta.path]}
+                      <span className={`text-xs px-2.5 py-1 rounded-md font-medium border ${routeStyles[msg.meta.route] || "bg-slate-50 text-slate-700 border-slate-200"}`}>
+                        {routeLabels[msg.meta.route] || msg.meta.route}
                       </span>
-                      {msg.meta.sources && (
-                        <button 
-                          onClick={() => setRightCollapsed(false)}
+                      {msg.meta.sources && msg.meta.sources.length > 0 && (
+                        <button
+                          onClick={() => {
+                            setRightPanelSources(msg.meta!.sources!);
+                            setRightPanelStrategy(msg.meta!.retrievalStrategy || null);
+                            setRightCollapsed(false);
+                          }}
                           className="text-xs font-medium text-slate-500 hover:text-teal-600 flex items-center gap-1 transition-colors px-2 py-1 rounded-md hover:bg-teal-50 cursor-pointer"
                           title="View evidence sources"
                         >
                           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
-                          {msg.meta.sources} sources
+                          {msg.meta.sources.length} sources
                         </button>
                       )}
                     </div>
                   )}
 
-                  {/* Persistent Generation Steps */}
-                  {msg.meta?.generationSteps && (
+                  {/* Collapsed execution log */}
+                  {msg.meta?.executionState && (
                     <details className="mt-4 rounded-2xl bg-slate-50 border border-slate-100 shadow-inner w-full group overflow-hidden">
                       <summary className="text-xs font-bold text-slate-500 uppercase tracking-wider p-4 cursor-pointer hover:bg-slate-100 transition-colors list-none flex items-center justify-between outline-none">
                         <span className="flex items-center gap-2">
                           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-teal-600"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
-                          Execution Log
+                          Execution Log — {msg.meta.executionState.steps.length} steps
                         </span>
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 group-open:rotate-180 transition-transform duration-200">
-                          <polyline points="6 9 12 15 18 9"></polyline>
-                        </svg>
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-slate-400 group-open:rotate-180 transition-transform duration-200"><polyline points="6 9 12 15 18 9"></polyline></svg>
                       </summary>
-                      <div className="flex flex-col gap-2 px-4 pb-4 border-t border-slate-100 pt-3">
-                        {msg.meta.generationSteps.map((step, idx) => (
-                          <div key={idx} className="flex items-center gap-3">
-                            <div className="w-4 h-4 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                            </div>
-                            <span className="text-[12px] text-slate-500 font-medium line-through decoration-slate-300">
-                              {step.label}
-                            </span>
-                          </div>
-                        ))}
+                      <div className="px-4 pb-4 border-t border-slate-100 pt-3">
+                        <ExecutionTimeline state={msg.meta.executionState} compact />
                       </div>
                     </details>
                   )}
@@ -620,64 +523,118 @@ if __name__ == '__main__':
               </div>
             ))}
 
-            {/* Generation Indicator */}
-            {generation?.active && (
+            {/* Active Execution */}
+            {activeExecution?.active && activeScenarioRef && (
               <div className="flex justify-start mb-8">
-                <div className="max-w-3xl flex flex-col items-start gap-2">
+                <div className="max-w-3xl w-full flex flex-col items-start gap-3">
                   <div className="flex items-center gap-2.5 ml-1">
                     <div className="w-6 h-6 rounded-md flex items-center justify-center text-[10px] font-bold bg-teal-600 text-white shadow-sm animate-pulse">
                       AI
                     </div>
-                    <span className="text-sm font-semibold text-slate-700">Sovereign AI Thinking...</span>
+                    <span className="text-sm font-semibold text-slate-700">Sovereign AI Processing...</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 font-bold border border-teal-200 animate-pulse">
+                      {activeScenarioRef.route.toUpperCase()} PATH
+                    </span>
                   </div>
-                  <div className="rounded-2xl p-5 bg-white border border-slate-200 shadow-sm rounded-tl-sm min-w-[320px]">
-                    <div className="flex flex-col gap-3 mb-4">
-                      {generation.steps.map((step, idx) => (
-                        <div key={idx} className="flex items-center gap-3">
-                          {step.status === "completed" ? (
-                            <div className="w-4 h-4 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#16a34a" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
-                            </div>
-                          ) : step.status === "active" ? (
-                            <div className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-teal-500 animate-spin flex-shrink-0"></div>
-                          ) : (
-                            <div className="w-4 h-4 rounded-full border-2 border-slate-200 flex-shrink-0"></div>
-                          )}
-                          <span className={`text-[13px] ${step.status === "active" ? "font-semibold text-slate-800" : step.status === "completed" ? "text-slate-500 line-through" : "text-slate-400"}`}>
-                            {step.label}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden shadow-inner">
-                      <div className="h-full bg-teal-500 transition-all duration-500 ease-linear" style={{ width: `${generation.progress}%` }}></div>
-                    </div>
+
+                  {/* Router */}
+                  <RouterVisualization
+                    route={activeScenarioRef.route}
+                    modelName={mode === "manual" ? selectedModelId : activeScenarioRef.model.name}
+                    modelReason={mode === "manual" ? "Manually selected" : activeScenarioRef.model.reason}
+                    complexity={activeScenarioRef.complexity}
+                  />
+
+                  {/* Execution Timeline */}
+                  <div className="w-full">
+                    <ExecutionTimeline state={activeExecution} />
                   </div>
+
+                  {/* Agent Execution (for complex scenarios) */}
+                  {activeScenarioRef.agents.sequential.length > 1 && (
+                    <div className="w-full">
+                      <AgentExecution
+                        agents={activeExecution.agents}
+                        plan={activeExecution.agentPlan}
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
-            
+
             <div ref={messagesEndRef} />
           </div>
 
           {/* Drawing Modal */}
           {viewingDrawing && (
-            <div className="absolute inset-0 z-50 flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-sm animate-in fade-in">
+            <div className="absolute inset-0 z-50 flex items-center justify-center p-8 bg-slate-900/60 backdrop-blur-sm">
               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
                   <div>
-                    <h2 className="text-lg font-semibold text-slate-900">P102_Bearing_Design.cad</h2>
-                    <div className="text-xs text-slate-500 mt-0.5">Engineering Drawing · P-102 Feed Transfer Pump</div>
+                    <h2 className="text-lg font-semibold text-slate-900">MRPL-CDU4-PID-012-DRAFT</h2>
+                    <div className="text-xs text-slate-500 mt-0.5">Engineering Drawing · P&ID — CDU-4 Reflux Pump Circuit</div>
                   </div>
-                  <button onClick={() => setViewingDrawing(false)} className="text-sm px-4 py-2 rounded-lg font-medium text-white bg-teal-600 hover:bg-teal-700 transition-colors">
-                    Close
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs px-3 py-1.5 rounded-lg font-semibold bg-amber-100 text-amber-800 border border-amber-200">
+                      ⚠ AI-GENERATED — NOT FOR CONSTRUCTION
+                    </span>
+                    <button onClick={() => setViewingDrawing(false)} className="text-sm px-4 py-2 rounded-lg font-medium text-white bg-teal-600 hover:bg-teal-700 transition-colors">
+                      Close
+                    </button>
+                  </div>
                 </div>
                 <div className="flex-1 overflow-auto bg-slate-100 p-6 flex justify-center items-center">
-                  <img src="/engineering_drawing.png" alt="Engineering Drawing" className="max-w-full max-h-[70vh] rounded shadow-md object-contain bg-white border border-slate-200" />
+                  {/* SVG P&ID drawing */}
+                  <div className="bg-white rounded-xl shadow-md border border-slate-200 p-4">
+                    <svg viewBox="0 0 600 380" className="w-full max-w-[700px]" style={{ border: "1px solid #E2E8F0" }}>
+                      <line x1="30" y1="190" x2="120" y2="190" stroke="#0F172A" strokeWidth="2" />
+                      <text x="50" y="180" fontSize="9" fill="#475569">Feed</text>
+                      <circle cx="145" cy="190" r="22" fill="white" stroke="#0F766E" strokeWidth="1.5" />
+                      <line x1="125" y1="190" x2="165" y2="190" stroke="#0F766E" strokeWidth="1.5" />
+                      <line x1="145" y1="170" x2="145" y2="210" stroke="#0F766E" strokeWidth="1.5" />
+                      <text x="140" y="224" fontSize="9" fill="#0F766E" fontWeight="600">P-102A</text>
+                      <line x1="167" y1="190" x2="230" y2="190" stroke="#0F172A" strokeWidth="2" />
+                      <polygon points="220,178 240,190 220,202" fill="white" stroke="#2563EB" strokeWidth="1.5" />
+                      <line x1="230" y1="178" x2="230" y2="162" stroke="#2563EB" strokeWidth="1.5" />
+                      <circle cx="230" cy="158" r="8" fill="white" stroke="#2563EB" strokeWidth="1.5" />
+                      <text x="225" y="215" fontSize="9" fill="#2563EB">FV-102</text>
+                      <line x1="240" y1="190" x2="320" y2="190" stroke="#0F172A" strokeWidth="2" />
+                      <line x1="280" y1="190" x2="280" y2="158" stroke="#0F172A" strokeWidth="1.5" />
+                      <circle cx="280" cy="148" r="12" fill="white" stroke="#475569" strokeWidth="1.5" />
+                      <text x="274" y="152" fontSize="8" fill="#475569">PI</text>
+                      <text x="270" y="136" fontSize="8" fill="#475569">301</text>
+                      <rect x="320" y="120" width="80" height="140" rx="4" fill="white" stroke="#0F172A" strokeWidth="2" />
+                      <text x="340" y="195" fontSize="9" fill="#0F172A" fontWeight="600">CDU-4</text>
+                      <text x="340" y="206" fontSize="8" fill="#475569">Reflux</text>
+                      <line x1="400" y1="190" x2="470" y2="190" stroke="#0F172A" strokeWidth="2" />
+                      <text x="425" y="180" fontSize="9" fill="#475569">Reflux out</text>
+                      <circle cx="145" cy="290" r="22" fill="white" stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="4,2" />
+                      <line x1="125" y1="290" x2="165" y2="290" stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="4,2" />
+                      <line x1="145" y1="270" x2="145" y2="310" stroke="#94A3B8" strokeWidth="1.5" strokeDasharray="4,2" />
+                      <text x="137" y="324" fontSize="9" fill="#94A3B8">P-102B</text>
+                      <text x="125" y="335" fontSize="8" fill="#94A3B8">(Standby)</text>
+                      <line x1="145" y1="268" x2="145" y2="212" stroke="#475569" strokeWidth="1.5" />
+                      <rect x="5" y="5" width="590" height="370" fill="none" stroke="#E2E8F0" strokeWidth="1" />
+                      <rect x="5" y="345" width="590" height="30" fill="#F8FAFC" stroke="#E2E8F0" strokeWidth="1" />
+                      <text x="15" y="364" fontSize="9" fill="#475569" fontWeight="600">MRPL — CDU-4 Reflux Pump Circuit P&amp;ID — Preliminary AI Draft</text>
+                      <text x="450" y="364" fontSize="9" fill="#DC2626" fontWeight="600">⚠ NOT FOR CONSTRUCTION</text>
+                    </svg>
+                    <div className="mt-3 text-center text-xs font-semibold py-2 rounded" style={{ background: "#FEF3C7", color: "#92400E", border: "1px solid #FDE68A" }}>
+                      AI-GENERATED — ENGINEERING REVIEW REQUIRED BEFORE USE
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
+          )}
+
+          {/* Artifact Document Modal */}
+          {viewingArtifactDocId && (
+            <DocumentViewer
+              documentId={viewingArtifactDocId}
+              onClose={() => setViewingArtifactDocId(null)}
+            />
           )}
 
           {/* Input */}
@@ -706,8 +663,8 @@ if __name__ == '__main__':
                       key={m}
                       onClick={() => setMode(m)}
                       className={`px-3 py-1 text-[10px] font-bold rounded-md transition-all capitalize ${
-                        mode === m 
-                          ? "bg-white text-teal-700 shadow-sm" 
+                        mode === m
+                          ? "bg-white text-teal-700 shadow-sm"
                           : "text-slate-500 hover:text-slate-700"
                       }`}
                     >
@@ -717,14 +674,19 @@ if __name__ == '__main__':
                 </div>
                 {mode === "manual" && (
                   <select
-                    value={selectedAgent}
-                    onChange={(e) => setSelectedAgent(e.target.value)}
-                    className="text-[10px] border border-slate-300 rounded-lg px-2 py-1 outline-none bg-white text-slate-700 focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 shadow-sm max-w-[130px] truncate shrink-0 ml-1"
+                    value={selectedModelId}
+                    onChange={(e) => setSelectedModelId(e.target.value)}
+                    className="text-[10px] border border-slate-300 rounded-lg px-2 py-1 outline-none bg-white text-slate-700 focus:ring-2 focus:ring-teal-500/20 focus:border-teal-500 shadow-sm max-w-[160px] truncate shrink-0 ml-1"
                   >
-                    {agents.map((a) => <option key={a}>{a}</option>)}
+                    <option value="qwen3-8b">Qwen3-8B (Reasoning)</option>
+                    <option value="qwen25-vl-7b">Qwen2.5-VL-7B (Vision)</option>
+                    <option value="internvl3-8b">InternVL3-8B (Industrial)</option>
+                    <option value="qwen25-omni-7b">Qwen2.5-Omni-7B</option>
+                    <option value="qwen25-omni-3b">Qwen2.5-Omni-3B (Fast)</option>
+                    <option value="sovereign-code-7b">Sovereign-Code-7B</option>
                   </select>
                 )}
-                
+
                 {showAttachMenu && (
                   <div className="absolute bottom-10 left-3 bg-white border border-slate-200 shadow-lg rounded-xl p-1.5 flex gap-1 z-20">
                     {["Attach", "Voice", "Image", "Agent", "Tools", "Model"].map((btn) => (
@@ -741,9 +703,10 @@ if __name__ == '__main__':
                 )}
                 <button
                   onClick={handleSend}
+                  disabled={!input.trim() || activeExecution?.active}
                   className={`ml-auto text-xs px-5 py-1.5 rounded-xl font-semibold transition-all shadow-sm ${
-                    input.trim() 
-                      ? "bg-teal-600 text-white hover:bg-teal-700 hover:shadow" 
+                    input.trim() && !activeExecution?.active
+                      ? "bg-teal-600 text-white hover:bg-teal-700 hover:shadow"
                       : "bg-slate-200 text-slate-400 cursor-not-allowed"
                   }`}
                   title="Send message"
@@ -768,7 +731,18 @@ if __name__ == '__main__':
               </button>
             </div>
 
-            {/* Project Context (Moved from Left Panel) */}
+            {/* Model Selector */}
+            <div className="px-5 py-4 border-b border-slate-100">
+              <ModelSelector
+                mode={mode}
+                autoModel={activeScenarioRef?.model}
+                selectedModelId={selectedModelId}
+                onModelChange={setSelectedModelId}
+                onModeChange={setMode}
+              />
+            </div>
+
+            {/* Project Context */}
             <div className="px-5 py-5 border-b border-slate-100 bg-slate-50/30">
               <div className="text-sm font-semibold text-slate-800 mb-4">Project Context</div>
               <div className="space-y-4">
@@ -794,33 +768,38 @@ if __name__ == '__main__':
 
             {/* Evidence */}
             <div className="px-5 py-5">
-              <div className="flex items-center justify-between mb-4">
-                <div className="text-sm font-semibold text-slate-800">Evidence Sources</div>
-                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200">3 USED</span>
-              </div>
-              <div className="space-y-4">
-                {[
-                  { doc: "Inspection SOP – Pump P-102", version: "3.2", dept: "Maintenance Eng.", method: "BM25 + Vector", score: 0.94 },
-                  { doc: "CDU-4 Maintenance Log 2026", version: "—", dept: "Operations", method: "Vector", score: 0.87 },
-                  { doc: "MRPL Equipment Vibration Limits", version: "2.1", dept: "Inspection Eng.", method: "BM25", score: 0.82 },
-                ].map((ev, i) => (
-                  <div
-                    key={i}
-                    className="p-3 rounded-xl border border-slate-100 bg-white shadow-sm hover:shadow-md hover:border-slate-200 transition-all cursor-pointer"
-                    title={`View document: ${ev.doc}`}
-                  >
-                    <div className="font-semibold text-sm text-slate-800 line-clamp-1 mb-2">{ev.doc}</div>
-                    <div className="flex items-center gap-2 mb-2 flex-wrap">
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-500">v{ev.version}</span>
-                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-500">{ev.dept}</span>
+              {activeExecution?.active && activeScenarioRef?.route === "knowledge" ? (
+                <div className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-500">
+                  <div className="text-sm font-semibold text-slate-800">Context & Evidence</div>
+                  <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col gap-4 shadow-sm">
+                    <div className="text-xs font-bold text-teal-600 uppercase tracking-wider flex items-center gap-2">
+                      <div className="w-3.5 h-3.5 rounded-full border-2 border-teal-500 border-t-transparent animate-spin"></div>
+                      Scanning Internal Knowledge Base...
                     </div>
-                    <div className="flex items-center justify-between mt-2 pt-2 border-t border-slate-50">
-                      <span className="text-[10px] font-bold px-2 py-1 rounded-md bg-blue-50 text-blue-600 border border-blue-100 uppercase tracking-wider">{ev.method}</span>
-                      <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-100">{(ev.score * 100).toFixed(0)}% Match</span>
+                    <div className="flex flex-col gap-2.5 pl-1">
+                      <div className="text-xs font-medium text-slate-600 flex items-center gap-2 animate-pulse" style={{ animationDelay: '0ms' }}>
+                        <span className="text-[9px] bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded flex items-center justify-center">◉</span> Searching inspection reports...
+                      </div>
+                      <div className="text-xs font-medium text-slate-600 flex items-center gap-2 animate-pulse" style={{ animationDelay: '200ms' }}>
+                        <span className="text-[9px] bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded flex items-center justify-center">◉</span> Searching maintenance SOPs...
+                      </div>
+                      <div className="text-xs font-medium text-slate-600 flex items-center gap-2 animate-pulse" style={{ animationDelay: '400ms' }}>
+                        <span className="text-[9px] bg-slate-200 text-slate-500 px-1.5 py-0.5 rounded flex items-center justify-center">◉</span> Searching engineering limits...
+                      </div>
                     </div>
                   </div>
-                ))}
-              </div>
+                </div>
+              ) : rightPanelSources.length > 0 && rightPanelStrategy ? (
+                <EvidencePanel
+                  sources={rightPanelSources}
+                  retrievalStrategy={rightPanelStrategy}
+                />
+              ) : (
+                <div className="text-center py-8">
+                  <div className="text-xs text-slate-400 font-medium">No evidence loaded yet.</div>
+                  <div className="text-[10px] text-slate-400 mt-1">Submit a knowledge query to see evidence sources.</div>
+                </div>
+              )}
             </div>
           </div>
         ) : (

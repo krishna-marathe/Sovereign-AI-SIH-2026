@@ -21,8 +21,15 @@ export default function Sandbox() {
   const [showNewFileInput, setShowNewFileInput] = useState(false);
   const [newFileName, setNewFileName] = useState("");
   
-  // Auto-typing simulation
   const typeTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const highlightRef = useRef<HTMLPreElement>(null);
+
+  const handleScroll = (e: React.UIEvent<HTMLTextAreaElement>) => {
+    if (highlightRef.current) {
+      highlightRef.current.scrollTop = e.currentTarget.scrollTop;
+      highlightRef.current.scrollLeft = e.currentTarget.scrollLeft;
+    }
+  };
 
   useEffect(() => {
     if (pendingSandboxTask) {
@@ -141,6 +148,37 @@ export default function Sandbox() {
         </div>
       </div>
 
+      {/* Sandbox Environment Status */}
+      <div className="flex items-center gap-6 px-6 py-2 bg-slate-100 border-b border-slate-200 text-xs flex-shrink-0">
+        <div className="flex items-center gap-2">
+          <span className="font-semibold text-slate-600">Sandbox Status:</span>
+          <span className="flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-700 font-bold border border-emerald-200">
+            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></div> ACTIVE
+          </span>
+        </div>
+        <div className="h-4 w-px bg-slate-300"></div>
+        <div className="flex items-center gap-2 text-slate-600">
+          <span className="font-semibold">Network:</span>
+          <span className="px-1.5 py-0.5 rounded bg-slate-200 font-medium">BLOCKED</span>
+        </div>
+        <div className="flex items-center gap-2 text-slate-600">
+          <span className="font-semibold">Filesystem:</span>
+          <span className="px-1.5 py-0.5 rounded bg-slate-200 font-medium">ISOLATED</span>
+        </div>
+        <div className="flex items-center gap-2 text-slate-600">
+          <span className="font-semibold">CPU Limit:</span>
+          <span className="font-medium">2 cores</span>
+        </div>
+        <div className="flex items-center gap-2 text-slate-600">
+          <span className="font-semibold">Memory:</span>
+          <span className="font-medium">512 MB</span>
+        </div>
+        <div className="flex items-center gap-2 text-slate-600">
+          <span className="font-semibold">Timeout:</span>
+          <span className="font-medium">300s</span>
+        </div>
+      </div>
+
       {/* Main IDE Area */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Sidebar (File Tree) */}
@@ -193,18 +231,22 @@ export default function Sandbox() {
           </div>
           
           {/* Editor Container with Overlay */}
-          <div className="flex-1 relative w-full h-full overflow-hidden">
+          <div className="flex-1 relative w-full h-full">
             {/* Syntax Highlighted Overlay */}
-            <div 
-              className="absolute inset-0 p-4 font-mono text-sm leading-relaxed whitespace-pre-wrap pointer-events-none break-words"
-              style={{ color: "#c9d1d9" }}
-              dangerouslySetInnerHTML={{ __html: Prism.highlight(code, Prism.languages.python, 'python') }}
+            <pre 
+              ref={highlightRef}
+              aria-hidden="true"
+              className="absolute inset-0 w-full h-full p-4 font-mono text-sm leading-relaxed whitespace-pre-wrap break-words overflow-hidden m-0 bg-transparent border-none outline-none pointer-events-none"
+              style={{ color: "#c9d1d9", zIndex: 1, tabSize: 4 }}
+              dangerouslySetInnerHTML={{ __html: Prism.highlight(code + (code.endsWith('\n') ? ' ' : ''), Prism.languages.python, 'python') }}
             />
             {/* Transparent Textarea */}
             <textarea
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              className="absolute inset-0 w-full h-full p-4 bg-transparent text-transparent caret-white font-mono text-sm leading-relaxed outline-none resize-none z-10 break-words"
+              onScroll={handleScroll}
+              className="absolute inset-0 w-full h-full p-4 bg-transparent text-transparent caret-white font-mono text-sm leading-relaxed whitespace-pre-wrap break-words overflow-auto m-0 border-none outline-none resize-none"
+              style={{ zIndex: 2, tabSize: 4 }}
               spellCheck="false"
             />
           </div>

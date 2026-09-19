@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { NavContext, Page, Project } from "./context/NavContext";
+import type { DemoArtifact, AuditEvent } from "./context/NavContext";
+import type { DemoScenario, ExecutionState } from "./demo";
 import Sidebar from "./components/Sidebar";
 import Header from "./components/Header";
 
@@ -20,6 +22,7 @@ import ModelRouter from "./pages/ModelRouter";
 import Models from "./pages/Models";
 import ToolRegistry from "./pages/ToolRegistry";
 import OfflinePlugins from "./pages/OfflinePlugins";
+import CodingWorkspace from "./pages/CodingWorkspace";
 import Sandbox from "./pages/Sandbox";
 import EngineeringAnalysis from "./pages/EngineeringAnalysis";
 import EngineeringDrawings from "./pages/EngineeringDrawings";
@@ -53,6 +56,7 @@ function PageContent({ page }: { page: Page }) {
     case "models": return <Models />;
     case "tool-registry": return <ToolRegistry />;
     case "offline-plugins": return <OfflinePlugins />;
+    case "coding-workspace": return <CodingWorkspace />;
     case "sandbox": return <Sandbox />;
     case "engineering-analysis": return <EngineeringAnalysis />;
     case "engineering-drawings": return <EngineeringDrawings />;
@@ -87,13 +91,41 @@ export default function App() {
   const [projects, setProjects] = useState<Project[]>(initialProjects);
   const [pendingSandboxTask, setPendingSandboxTask] = useState<string | null>(null);
 
+  // Demo execution state
+  const [activeScenario, setActiveScenario] = useState<DemoScenario | null>(null);
+  const [executionState, setExecutionState] = useState<ExecutionState | null>(null);
+  const [demoArtifacts, setDemoArtifacts] = useState<DemoArtifact[]>([]);
+  
+  const [auditEvents, setAuditEvents] = useState<AuditEvent[]>([
+    { id: "EVT-0847", user: "Anita Rao", query: "Upload CDU-4 inspection report", agent: "Document Agent", model: "Vision Model", tool: "OCR Engine", action: "DOCUMENT_UPLOAD", approval: "—", output: "47 pages indexed", ts: "16 Sep 2026 14:22:03", cls: "CONFIDENTIAL", risk: "Low" },
+    { id: "EVT-0848", user: "Document Agent", query: "Extract and chunk report", agent: "Document Agent", model: "—", tool: "PDF Parser", action: "DOCUMENT_PROCESS", approval: "—", output: "1,284 chunks created", ts: "16 Sep 2026 14:22:31", cls: "CONFIDENTIAL", risk: "Low" },
+    { id: "EVT-0849", user: "Anita Rao", query: "Compare inspection report with SOP", agent: "HSE Agent", model: "Small LLM", tool: "Hybrid RAG", action: "KNOWLEDGE_QUERY", approval: "—", output: "3 sources retrieved, analysis complete", ts: "16 Sep 2026 14:25:10", cls: "CONFIDENTIAL", risk: "Low" },
+    { id: "EVT-0850", user: "HSE Agent", query: "Request approval — management note generation", agent: "Document Agent", model: "Small LLM", tool: "Template Engine", action: "APPROVAL_REQUEST", approval: "Pending", output: "Approval created APR-2024-001", ts: "16 Sep 2026 14:30:45", cls: "CONFIDENTIAL", risk: "Medium" },
+    { id: "EVT-0851", user: "Rajesh Kumar", query: "Show all open maintenance tasks for CDU-4", agent: "Data Analysis Agent", model: "No LLM", tool: "PostgreSQL Query Tool", action: "DATABASE_QUERY", approval: "—", output: "8 records returned (read-only)", ts: "16 Sep 2026 14:35:00", cls: "INTERNAL", risk: "Low" },
+    { id: "EVT-0852", user: "System", query: "Periodic security scan", agent: "—", model: "—", tool: "Security Scanner", action: "SECURITY_SCAN", approval: "—", output: "No threats detected", ts: "16 Sep 2026 14:00:00", cls: "PUBLIC", risk: "Low" },
+  ]);
+
+  const addAuditEvent = (e: Omit<AuditEvent, "id">) => {
+    setAuditEvents(prev => [{
+      ...e,
+      id: `EVT-${(853 + prev.length).toString().padStart(4, '0')}`,
+    }, ...prev]);
+  };
+
   const updateProject = (name: string, updates: Partial<Project>) => {
     setProjects(prev => prev.map(p => p.name === name ? { ...p, ...updates } : p));
   };
 
+  const resetDemo = () => {
+    setActiveScenario(null);
+    setExecutionState(null);
+    setDemoArtifacts([]);
+    setPendingSandboxTask(null);
+  };
+
   // Full-width pages that manage their own layout
   const fullHeightPages: Page[] = [
-    "workbench", "sandbox", "personal-chat", "research-notebooks",
+    "workbench", "coding-workspace", "sandbox", "personal-chat", "research-notebooks",
     "notes", "project-detail",
   ];
   const isFullHeight = fullHeightPages.includes(currentPage);
@@ -103,7 +135,15 @@ export default function App() {
   }
 
   return (
-    <NavContext.Provider value={{ currentPage, navigate: setCurrentPage, projects, updateProject, pendingSandboxTask, setPendingSandboxTask }}>
+    <NavContext.Provider value={{
+      currentPage, navigate: setCurrentPage, projects, updateProject,
+      pendingSandboxTask, setPendingSandboxTask,
+      activeScenario, setActiveScenario,
+      executionState, setExecutionState,
+      demoArtifacts, setDemoArtifacts,
+      auditEvents, addAuditEvent,
+      resetDemo,
+    }}>
       <div className="flex h-screen overflow-hidden" style={{ background: "var(--color-bg)" }}>
         {/* Sidebar */}
         <div 

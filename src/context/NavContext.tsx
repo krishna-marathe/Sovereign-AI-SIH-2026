@@ -1,4 +1,6 @@
 import { createContext, useContext } from "react";
+import type { DemoScenario, ExecutionState } from "../demo";
+import type { DemoArtifactTemplate } from "../demo/demoArtifacts";
 
 export type Page =
   | "dashboard"
@@ -50,6 +52,30 @@ export type Project = {
   contributors: string[];
 };
 
+export type DemoArtifact = {
+  id: string;
+  template: DemoArtifactTemplate;
+  status: "pending" | "approved" | "rejected";
+  approvedBy?: string;
+  approvedAt?: string;
+  scenarioId: string;
+};
+
+export type AuditEvent = {
+  id: string;
+  user: string;
+  query: string;
+  agent: string;
+  model: string;
+  tool: string;
+  action: string;
+  approval: string;
+  output: string;
+  ts: string;
+  cls: string;
+  risk: string;
+};
+
 export type NavContextType = {
   currentPage: Page;
   navigate: (page: Page) => void;
@@ -57,6 +83,16 @@ export type NavContextType = {
   updateProject: (name: string, updates: Partial<Project>) => void;
   pendingSandboxTask: string | null;
   setPendingSandboxTask: (t: string | null) => void;
+  // Demo execution state
+  activeScenario: DemoScenario | null;
+  setActiveScenario: (s: DemoScenario | null) => void;
+  executionState: ExecutionState | null;
+  setExecutionState: (s: ExecutionState | null) => void;
+  demoArtifacts: DemoArtifact[];
+  setDemoArtifacts: (a: DemoArtifact[] | ((prev: DemoArtifact[]) => DemoArtifact[])) => void;
+  auditEvents: AuditEvent[];
+  addAuditEvent: (e: Omit<AuditEvent, "id">) => void;
+  resetDemo: () => void;
 };
 
 export const NavContext = createContext<NavContextType>({
@@ -66,6 +102,15 @@ export const NavContext = createContext<NavContextType>({
   updateProject: () => {},
   pendingSandboxTask: null,
   setPendingSandboxTask: () => {},
+  activeScenario: null,
+  setActiveScenario: () => {},
+  executionState: null,
+  setExecutionState: () => {},
+  demoArtifacts: [],
+  setDemoArtifacts: () => {},
+  auditEvents: [],
+  addAuditEvent: () => {},
+  resetDemo: () => {},
 });
 
 export const useNav = () => useContext(NavContext);
